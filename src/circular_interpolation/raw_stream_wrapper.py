@@ -5,7 +5,11 @@ from typing import Literal
 
 import numpy as np
 
-from circular_interpolation_inertia import (
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent.parent / "benchmarks"))
+
+from .inertia import (
     circular_difference_deg,
     wrap_deg,
 )

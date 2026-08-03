@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent / "benchmarks"))
 from benchmark_corpus import make_benchmark_corpus, validate_corpus
 
 

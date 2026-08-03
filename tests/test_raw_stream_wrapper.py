@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from raw_stream_wrapper import interpolate_raw_circular_stream
+from circular_interpolation.raw_stream_wrapper import interpolate_raw_circular_stream
 
 
 def _integrate(t: np.ndarray, v: np.ndarray, initial: float = 11.0) -> np.ndarray:

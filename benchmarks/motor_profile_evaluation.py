@@ -8,7 +8,7 @@ from typing import Callable
 
 import numpy as np
 
-from circular_interpolation_inertia import (
+from circular_interpolation.inertia import (
     CircularInterpolationResult,
     add_single_held_dropout,
     circular_difference_deg,

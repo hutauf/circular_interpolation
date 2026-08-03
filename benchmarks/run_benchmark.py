@@ -13,7 +13,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from benchmark_corpus import BENCHMARK_VERSION, BenchmarkCase, make_benchmark_corpus, validate_corpus
-from circular_interpolation_inertia import (
+from circular_interpolation.inertia import (
     CircularInterpolationResult,
     interpolate_circular_inertial,
     interpolate_circular_linear,

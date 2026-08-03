@@ -1,0 +1,34 @@
+Metadata-Version: 2.4
+Name: circular_interpolation
+Version: 0.1.0
+Summary: Algorithms for circular angle interpolation.
+Author: Author
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: matplotlib
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
+
+# circular_interpolation
+
+A Python package for robust circular (angular) interpolation.
+
+## Features
+- **Inertia Model**: Handles angular data dropouts and wraps using Kalman filtering and RTS smoothing.
+- **Adaptive Minimum Jerk**: Smooth gap filling using minimum jerk trajectories.
+- **Raw Stream Wrapper**: Detects and interpolates plateaus or dropouts in raw motor angle streams.
+
+## Installation
+```bash
+pip install -e .
+```
+
+## Structure
+- `src/circular_interpolation`: Core interpolation algorithms.
+- `benchmarks/`: Evaluation scripts.
+- `tests/`: Unit tests.
+- `deprecated/`: Old outputs and zipped experiments (ignored by git).

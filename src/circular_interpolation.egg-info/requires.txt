@@ -1,0 +1,8 @@
+numpy
+scipy
+matplotlib
+
+[dev]
+pytest
+black
+mypy
