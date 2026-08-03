@@ -5,15 +5,11 @@ from typing import Literal
 
 import numpy as np
 
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent.parent / "benchmarks"))
-
 from .inertia import (
     circular_difference_deg,
     wrap_deg,
 )
-from motor_profile_evaluation import interpolate_circular_auto
+from .auto import interpolate_circular_auto
 
 
 PlateauKind = Literal[

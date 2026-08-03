@@ -18,7 +18,7 @@ from circular_interpolation.inertia import (
     interpolate_circular_inertial,
     interpolate_circular_linear,
 )
-from motor_profile_evaluation import (
+from circular_interpolation.auto import (
     interpolate_circular_boundary_hermite,
     interpolate_circular_constant_acceleration,
 )
