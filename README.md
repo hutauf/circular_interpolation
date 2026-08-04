@@ -14,6 +14,7 @@ Angles are not ordinary scalars: `359 deg` and `1 deg` are two degrees apart, an
 - **Direct target-grid evaluation:** selected continuous trajectories are evaluated at the requested times instead of repairing a wrapped series and then resampling it.
 - **Irregular grids and extrapolation** are supported.
 - **Raw-stream wrapper** detects held-value plateaus while conservatively preserving real standstill and quantization plateaus.
+- **Measured plateau anchors stay valid by default:** only subsequent stale repetitions are reconstructed.
 - **Diagnostics** report the selected model and confidence for each source gap.
 
 ## Installation
@@ -99,6 +100,30 @@ print(raw_result.angle_deg)
 print(raw_result.decisions)
 print(raw_result.repaired_mask)
 ```
+
+### The first plateau value remains valid by default
+
+When a repeated plateau is classified as a held-value dropout, its first occurrence is treated as a genuine measurement. Only the later repetitions are reconstructed:
+
+```text
+input:       [1, 2, 3, 3, 3, 3, 7, 8, 9]
+repair mask: [., ., ., x, x, x, ., ., .]
+model sees:  [1, 2, 3, ?, ?, ?, 7, 8, 9]
+```
+
+The first `3` did not appear from thin air: the sensor measured it before it began returning that stale value. This is the default `plateau_anchor_policy="preserve"` behavior.
+
+For a sensor protocol where the first occurrence may already be stale, include it explicitly:
+
+```python
+raw_result = interpolate_raw_circular_stream(
+    time_s=time_s,
+    angle_deg=angle_deg,
+    plateau_anchor_policy="repair",
+)
+```
+
+This changes only which samples enter the reconstruction mask. Plateau classification and its source-index diagnostics remain unchanged.
 
 The raw-stream wrapper deliberately keeps its classification masks and output on the sensor grid. To produce a different output grid after classification, call the automatic API with the detected mask:
 
