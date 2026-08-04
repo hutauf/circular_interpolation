@@ -8,6 +8,7 @@ from ._auto_common import (
     _fit_boundary_kinematics,
 )
 
+
 def _run_bounds(valid: np.ndarray, index: int) -> tuple[int, int]:
     start = index
     while start > 0 and valid[start - 1]:
@@ -40,7 +41,7 @@ def _evaluate_gap_trajectory(
     query_time_s: np.ndarray,
     trajectory: _GapTrajectory,
 ) -> np.ndarray:
-    if trajectory.model == "linear_shortest_arc":
+    if trajectory.model in {"linear_shortest_arc", "linear"}:
         u = (
             (query_time_s - trajectory.left_time_s)
             / (trajectory.right_time_s - trajectory.left_time_s)
@@ -143,5 +144,3 @@ def _limited_kinematic_extrapolation(
         + boundary_acceleration_deg_s2 * accelerated_dt
     )
     return accelerated_position + terminal_velocity * (dt - accelerated_dt)
-
-

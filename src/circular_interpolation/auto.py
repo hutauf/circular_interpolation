@@ -15,38 +15,46 @@ from ._auto_curves import _run_bounds
 from ._auto_grid import _evaluate_on_target_grid
 from ._auto_hermite import interpolate_circular_boundary_hermite
 from ._auto_kalman import interpolate_circular_constant_acceleration
-from .inertia import interpolate_circular_linear, wrap_deg
+from ._periodic import (
+    Period,
+    branch_offset,
+    interpolate_linear,
+    validate_period,
+    wrap_values,
+)
+
 
 def interpolate_circular_auto(
     time_s: np.ndarray,
     angle_deg: np.ndarray,
     invalid_mask: np.ndarray,
     *,
-    period: float = 360.0,
+    period: Period = 360.0,
     target_time_s: np.ndarray | None = None,
 ) -> AutomaticInterpolationResult:
-    """Select a robust circular gap model and optionally evaluate a new time grid.
+    """Select a robust gap model and optionally evaluate a new time grid.
+
+    A positive finite ``period`` enables circular branch selection and wrapping.
+    Set ``period=None`` for an ordinary scalar signal; no values are wrapped or
+    unwrapped and ``angle_deg`` equals ``unwrapped_deg`` in the returned result.
 
     ``target_time_s`` is the only resampling control. When it is omitted, the
-    function returns exactly the historical source-grid result. When supplied,
-    the selected continuous trajectories are evaluated directly at those times;
-    the implementation never interpolates the already wrapped output. The grid
-    may be irregular and may extend before or after the measurements.
+    function returns the source-grid result. When supplied, selected continuous
+    trajectories are evaluated directly at those times. The grid may be
+    irregular and may extend before or after the measurements.
 
-    Internal gaps use the same automatic model selection as before. Valid source
-    runs are evaluated with shape-preserving unwrapped interpolation. Outside the
+    Internal gaps use automatic model selection. Valid source runs are evaluated
+    with shape-preserving interpolation on the continuous branch. Outside the
     measured support, local position, velocity, and acceleration are estimated at
     the nearest boundary; acceleration is used only across the local fit horizon
     and extrapolation then continues at constant velocity to avoid quadratic
     blow-up far from the data.
     """
-    if period <= 0.0:
-        raise ValueError("period must be positive.")
-
+    period = validate_period(period)
     t, y, invalid = _validate(time_s, angle_deg, invalid_mask)
     target = _validate_target_time_s(target_time_s, t)
 
-    _, linear_u = interpolate_circular_linear(t, y, invalid, period=period)
+    _, linear_u = interpolate_linear(t, y, invalid, period=period)
     ca = interpolate_circular_constant_acceleration(t, y, invalid, period=period)
     hermite = interpolate_circular_boundary_hermite(t, y, invalid, period=period)
 
@@ -73,7 +81,7 @@ def interpolate_circular_auto(
             near_standstill = max_speed < 100.0 and max(abs(a0), abs(a1)) < 5_000.0
 
             if near_standstill:
-                model = "linear_shortest_arc"
+                model = "linear_shortest_arc" if period is not None else "linear"
                 candidate = linear_u
                 confidence = "high"
             elif duration <= 0.006:
@@ -93,7 +101,11 @@ def interpolate_circular_auto(
                     confidence = "low"
 
         anchor = max(0, left)
-        offset = round((output_u[anchor] - candidate[anchor]) / period) * period
+        offset = branch_offset(
+            float(output_u[anchor]),
+            float(candidate[anchor]),
+            period,
+        )
         output_u[start:end] = candidate[start:end] + offset
         choices.append((start, end, model))
         confidences.append((start, end, confidence))
@@ -135,19 +147,19 @@ def interpolate_circular_auto(
                 )
             )
 
-    source_angle = wrap_deg(output_u, period)
-    source_angle[~invalid] = wrap_deg(y[~invalid], period)
+    source_output = wrap_values(output_u, period)
+    source_output[~invalid] = wrap_values(y[~invalid], period)
 
     if target.shape == t.shape and np.array_equal(target, t):
         return AutomaticInterpolationResult(
-            angle_deg=source_angle,
+            angle_deg=source_output,
             unwrapped_deg=output_u,
             chosen_model_by_gap=choices,
             confidence_by_gap=confidences,
             time_s=target,
         )
 
-    target_unwrapped = _evaluate_on_target_grid(
+    target_continuous = _evaluate_on_target_grid(
         t,
         y,
         output_u,
@@ -157,11 +169,9 @@ def interpolate_circular_auto(
         period=period,
     )
     return AutomaticInterpolationResult(
-        angle_deg=wrap_deg(target_unwrapped, period),
-        unwrapped_deg=target_unwrapped,
+        angle_deg=wrap_values(target_continuous, period),
+        unwrapped_deg=target_continuous,
         chosen_model_by_gap=choices,
         confidence_by_gap=confidences,
         time_s=target,
     )
-
-

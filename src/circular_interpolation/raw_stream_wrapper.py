@@ -5,9 +5,13 @@ from typing import Literal
 
 import numpy as np
 
-from .inertia import (
-    circular_difference_deg,
-    wrap_deg,
+from ._periodic import (
+    Period,
+    branch_offset,
+    unwrap_values,
+    validate_period,
+    value_difference,
+    wrap_values,
 )
 from .auto import interpolate_circular_auto
 
@@ -23,7 +27,7 @@ PlateauKind = Literal[
 
 @dataclass(frozen=True)
 class PlateauDecision:
-    """Classification of one run of repeated angular samples.
+    """Classification of one run of repeated samples.
 
     ``repeat_start`` is the first sample that repeats its predecessor.
     ``repeat_end`` is exclusive. The unchanged plateau therefore also includes
@@ -71,7 +75,7 @@ def _validate(time_s: np.ndarray, angle_deg: np.ndarray) -> tuple[np.ndarray, np
 def _repeat_runs(
     y: np.ndarray,
     *,
-    period: float,
+    period: Period,
     repeat_tolerance_deg: float,
     min_repeated_samples: int,
 ) -> list[tuple[int, int]]:
@@ -79,7 +83,7 @@ def _repeat_runs(
     repeated = np.zeros(y.size, dtype=bool)
     finite_pairs = np.isfinite(y[1:]) & np.isfinite(y[:-1])
     repeated[1:] = finite_pairs & (
-        np.abs(circular_difference_deg(y[1:], y[:-1], period))
+        np.abs(value_difference(y[1:], y[:-1], period))
         <= repeat_tolerance_deg
     )
 
@@ -100,7 +104,7 @@ def _robust_edge_velocity(
     end: int,
     side: Literal["left", "right"],
     window_samples: int,
-    period: float,
+    period: Period,
 ) -> float:
     """Estimate local velocity near a plateau edge using median sample slopes."""
     if side == "left":
@@ -117,30 +121,34 @@ def _robust_edge_velocity(
         return 0.0
 
     local_t = t[indices]
-    local_y = np.unwrap(y[indices], period=period)
+    local_y = unwrap_values(y[indices], period)
     dt = np.diff(local_t)
     slopes = np.diff(local_y) / dt
     if slopes.size == 0:
         return 0.0
 
     # The median is intentionally conservative around quantization plateaus and
-    # rejects isolated noisy encoder steps better than an endpoint derivative.
+    # rejects isolated noisy sensor steps better than an endpoint derivative.
     return float(np.median(slopes))
 
 
 def _hermite_motion_evidence(
     *,
     y0: float,
-    y1_wrapped: float,
+    y1_observed: float,
     v0: float,
     v1: float,
     duration_s: float,
     sample_times_s: np.ndarray,
-    period: float,
+    period: Period,
 ) -> tuple[float, float]:
     """Return maximum predicted motion and selected endpoint displacement."""
     expected_displacement = 0.5 * (v0 + v1) * duration_s
-    y1 = y1_wrapped + round((y0 + expected_displacement - y1_wrapped) / period) * period
+    y1 = y1_observed + branch_offset(
+        y0 + expected_displacement,
+        y1_observed,
+        period,
+    )
 
     if duration_s <= 0.0 or sample_times_s.size == 0:
         return 0.0, float(y1 - y0)
@@ -158,7 +166,7 @@ def classify_repeated_plateaus(
     time_s: np.ndarray,
     angle_deg: np.ndarray,
     *,
-    period: float = 360.0,
+    period: Period = 360.0,
     repeat_tolerance_deg: float = 0.0,
     min_repeated_samples: int = 1,
     fit_window_samples: int = 12,
@@ -169,20 +177,24 @@ def classify_repeated_plateaus(
 ) -> list[PlateauDecision]:
     """Classify unchanged runs without requiring an externally supplied mask.
 
+    Set ``period=None`` for an ordinary non-periodic signal. The detector then
+    uses normal subtraction and never maps samples onto another period branch.
+
     The detector is deliberately conservative:
 
     * leading and trailing plateaus are preserved;
     * plateaus with near-zero edge velocity are preserved as true standstill or
-      encoder quantization;
+      sensor quantization;
     * only an internal plateau with clear two-sided motion evidence is marked as
       a held-value dropout;
     * uncertain cases are returned as ``ambiguous`` and are not repaired by the
       default wrapper policy.
 
-    Angle data alone cannot distinguish every true stop from every frozen sensor.
+    Values alone cannot distinguish every true stop from every frozen sensor.
     Physical acceleration limits and two-sided look-ahead make the distinction
     much safer, but not mathematically identifiable in all cases.
     """
+    period = validate_period(period)
     t, y = _validate(time_s, angle_deg)
     if repeat_tolerance_deg < 0.0:
         raise ValueError("repeat_tolerance_deg must be non-negative.")
@@ -251,7 +263,7 @@ def classify_repeated_plateaus(
         relative_times = t[repeat_start:repeat_end] - t[anchor]
         motion_evidence, endpoint_displacement = _hermite_motion_evidence(
             y0=float(y[anchor]),
-            y1_wrapped=float(y[right]),
+            y1_observed=float(y[right]),
             v0=v_left,
             v1=v_right,
             duration_s=endpoint_span_s,
@@ -271,7 +283,7 @@ def classify_repeated_plateaus(
 
         # A genuine stop beginning immediately at the plateau edge would need at
         # least this acceleration over one sample interval. This is not a claim
-        # about the exact motor trajectory; it is a useful plausibility bound.
+        # about the exact trajectory; it is a useful plausibility bound.
         required_stop_accel = maximum_speed / max(dt_typical, 1e-12)
         stop_is_physically_hard = required_stop_accel > max_abs_acceleration_deg_s2
 
@@ -286,7 +298,7 @@ def classify_repeated_plateaus(
                 kind = "quantization_plateau"
                 reason = (
                     "The plateau is short and edge motion is below the standstill threshold; "
-                    "it is treated as normal encoder quantization or micro-motion."
+                    "it is treated as normal sensor quantization or micro-motion."
                 )
             confidence: Literal["high", "medium", "low"] = "high"
 
@@ -300,7 +312,7 @@ def classify_repeated_plateaus(
             kind = "held_dropout"
             confidence = "high" if velocity_change_ratio <= 0.35 else "medium"
             reason = (
-                "The motor is clearly moving on both sides in a compatible direction, "
+                "The signal is clearly moving on both sides in a compatible direction, "
                 "the look-ahead trajectory moves away from the held value, and an "
                 "instantaneous true stop would exceed the configured acceleration limit."
             )
@@ -329,7 +341,7 @@ def classify_repeated_plateaus(
                 )
             elif abs(endpoint_displacement) < min_motion_evidence_deg:
                 reason = (
-                    "The two-sided trajectory predicts too little angular motion to justify "
+                    "The two-sided trajectory predicts too little motion to justify "
                     "overwriting the repeated samples."
                 )
             else:
@@ -360,7 +372,7 @@ def interpolate_raw_circular_stream(
     time_s: np.ndarray,
     angle_deg: np.ndarray,
     *,
-    period: float = 360.0,
+    period: Period = 360.0,
     repeat_tolerance_deg: float = 0.0,
     min_repeated_samples: int = 1,
     fit_window_samples: int = 12,
@@ -370,13 +382,18 @@ def interpolate_raw_circular_stream(
     max_abs_acceleration_deg_s2: float = 1_000_000.0,
     ambiguous_policy: Literal["preserve", "repair"] = "preserve",
 ) -> RawStreamInterpolationResult:
-    """Detect held-value plateaus and interpolate them from a raw angle stream.
+    """Detect held-value plateaus and interpolate them from a raw signal.
 
     No invalid-data mask is required. True standstill, boundary plateaus and
     quantization plateaus are retained. By default, ambiguous plateaus are also
     retained. Set ``ambiguous_policy='repair'`` only if false negatives are more
-    costly than false positives for the application.
+    costly than false positives for the application. Set ``period=None`` for a
+    non-periodic signal.
     """
+    period = validate_period(period)
+    if ambiguous_policy not in {"preserve", "repair"}:
+        raise ValueError("ambiguous_policy must be 'preserve' or 'repair'.")
+
     t, y = _validate(time_s, angle_deg)
     decisions = classify_repeated_plateaus(
         t,
@@ -417,15 +434,14 @@ def interpolate_raw_circular_stream(
         chosen_models = auto.chosen_model_by_gap
         interpolation_confidence = auto.confidence_by_gap
     else:
-        output_unwrapped = np.unwrap(y, period=period)
-        output_angle = wrap_deg(output_unwrapped, period)
+        output_unwrapped = unwrap_values(y, period)
+        output_angle = wrap_values(output_unwrapped, period)
         chosen_models = []
         interpolation_confidence = []
 
     # Preserve every sample that was not explicitly selected for repair.
-    output_angle[~repair_mask & np.isfinite(y)] = wrap_deg(
-        y[~repair_mask & np.isfinite(y)], period
-    )
+    keep = ~repair_mask & np.isfinite(y)
+    output_angle[keep] = wrap_values(y[keep], period)
 
     return RawStreamInterpolationResult(
         angle_deg=output_angle,

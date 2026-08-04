@@ -10,6 +10,8 @@ from ._auto_curves import (
     _limited_kinematic_extrapolation,
 )
 from ._auto_kalman import interpolate_circular_constant_acceleration
+from ._periodic import Period
+
 
 def _evaluate_constant_acceleration_targets(
     t: np.ndarray,
@@ -19,7 +21,7 @@ def _evaluate_constant_acceleration_targets(
     gap_trajectories: list[_GapTrajectory],
     output: np.ndarray,
     *,
-    period: float,
+    period: Period,
 ) -> None:
     """Evaluate RTS trajectories at inserted prediction-only timestamps.
 
@@ -82,7 +84,7 @@ def _evaluate_on_target_grid(
     target: np.ndarray,
     gap_trajectories: list[_GapTrajectory],
     *,
-    period: float,
+    period: Period,
 ) -> np.ndarray:
     valid = ~invalid
     output = np.full(target.shape, np.nan, dtype=float)
@@ -166,7 +168,7 @@ def _evaluate_on_target_grid(
     missing = ~np.isfinite(output)
     if np.any(missing):
         # Degenerate one-sample valid runs can leave isolated points uncovered.
-        # The final fallback stays on the already selected unwrapped branch.
+        # The final fallback stays on the already selected continuous branch.
         output[missing] = np.interp(target[missing], t, source_unwrapped)
 
     # Preserve the historical source-grid result exactly whenever the requested
@@ -183,5 +185,3 @@ def _evaluate_on_target_grid(
     output[target_positions[source_indices]] = source_unwrapped[source_indices]
 
     return output
-
-

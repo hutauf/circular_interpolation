@@ -3,21 +3,28 @@ from __future__ import annotations
 import numpy as np
 
 from ._auto_common import KinematicInterpolationResult, _validate
-from .inertia import circular_difference_deg, wrap_deg
+from ._periodic import (
+    Period,
+    unwrap_values,
+    validate_period,
+    value_difference,
+    wrap_values,
+)
+
 
 def _initial_kinematics(
     t: np.ndarray,
     y: np.ndarray,
     valid: np.ndarray,
     first: int,
-    period: float,
+    period: Period,
     max_points: int = 40,
 ) -> tuple[float, float]:
     indices = np.flatnonzero(valid & (np.arange(t.size) >= first))[:max_points]
     if indices.size < 3:
         return 0.0, 0.0
     local_t = t[indices] - t[indices[0]]
-    local_y = np.unwrap(y[indices], period=period)
+    local_y = unwrap_values(y[indices], period)
     degree = min(2, indices.size - 1)
     coeff = np.polyfit(local_t, local_y, degree)
     if degree == 1:
@@ -30,13 +37,18 @@ def interpolate_circular_constant_acceleration(
     angle_deg: np.ndarray,
     invalid_mask: np.ndarray,
     *,
-    period: float = 360.0,
+    period: Period = 360.0,
     acceleration_random_walk_std: float = 2_000_000.0,
     measurement_std_deg: float = 0.03,
     gate_sigma: float = 8.0,
     preserve_valid_samples: bool = True,
 ) -> KinematicInterpolationResult:
-    """Circular constant-acceleration Kalman filter plus RTS smoother."""
+    """Constant-acceleration Kalman filter plus RTS smoother.
+
+    ``period=None`` treats measurements as ordinary scalar values. A positive
+    finite period keeps the circular nearest-branch measurement update.
+    """
+    period = validate_period(period)
     t, y, invalid = _validate(time_s, angle_deg, invalid_mask)
     valid = ~invalid
     n = t.size
@@ -94,8 +106,10 @@ def interpolate_circular_constant_acceleration(
 
         if valid[k]:
             innovation = float(
-                circular_difference_deg(
-                    y[k], wrap_deg(state_pred[0], period), period
+                value_difference(
+                    y[k],
+                    wrap_values(state_pred[0], period),
+                    period,
                 )
             )
             innovation_variance = covariance_pred[0, 0] + r
@@ -135,10 +149,10 @@ def interpolate_circular_constant_acceleration(
         xs[k, 1] = xs[first, 1] - xs[first, 2] * dt
         xs[k, 2] = xs[first, 2]
 
-    output = wrap_deg(xs[:, 0], period)
+    output = wrap_values(xs[:, 0], period)
     if preserve_valid_samples:
         keep = valid & ~rejected
-        output[keep] = wrap_deg(y[keep], period)
+        output[keep] = wrap_values(y[keep], period)
 
     return KinematicInterpolationResult(
         angle_deg=output,
@@ -147,5 +161,3 @@ def interpolate_circular_constant_acceleration(
         angular_acceleration_deg_s2=xs[:, 2],
         rejected_outliers=rejected,
     )
-
-

@@ -8,17 +8,29 @@ from ._auto_common import (
     _fit_boundary_kinematics,
     _validate,
 )
-from .inertia import wrap_deg
+from ._periodic import (
+    Period,
+    branch_offset,
+    unwrap_values,
+    validate_period,
+    wrap_values,
+)
+
 
 def interpolate_circular_boundary_hermite(
     time_s: np.ndarray,
     angle_deg: np.ndarray,
     invalid_mask: np.ndarray,
     *,
-    period: float = 360.0,
+    period: Period = 360.0,
     fit_window_samples: int = 20,
 ) -> KinematicInterpolationResult:
-    """Offline gap interpolation using samples on both sides of each gap."""
+    """Offline gap interpolation using samples on both sides of each gap.
+
+    Set ``period=None`` to use the same reconstruction for an ordinary scalar
+    signal without branch alignment, wrapping, or unwrapping.
+    """
+    period = validate_period(period)
     t, y, invalid = _validate(time_s, angle_deg, invalid_mask)
     valid = ~invalid
     n = t.size
@@ -31,7 +43,7 @@ def interpolate_circular_boundary_hermite(
         raise ValueError("No valid samples.")
 
     s0, e0 = valid_runs[0]
-    unwrapped[s0:e0] = np.unwrap(y[s0:e0], period=period)
+    unwrapped[s0:e0] = unwrap_values(y[s0:e0], period)
 
     for run_index in range(1, len(valid_runs)):
         prev_start, prev_end = valid_runs[run_index - 1]
@@ -39,7 +51,7 @@ def interpolate_circular_boundary_hermite(
         left = prev_end - 1
         right = right_start
 
-        right_local = np.unwrap(y[right_start:right_end], period=period)
+        right_local = unwrap_values(y[right_start:right_end], period)
         left_indices = np.arange(max(prev_start, prev_end - fit_window_samples), prev_end)
         temp_right = np.full(n, np.nan)
         temp_right[right_start:right_end] = right_local
@@ -51,8 +63,8 @@ def interpolate_circular_boundary_hermite(
         duration = t[right] - t[left]
         expected_displacement = 0.5 * (v0 + v1) * duration
         target_right = unwrapped[left] + expected_displacement
-        branch_offset = round((target_right - right_local[0]) / period) * period
-        unwrapped[right_start:right_end] = right_local + branch_offset
+        offset = branch_offset(target_right, float(right_local[0]), period)
+        unwrapped[right_start:right_end] = right_local + offset
 
         y0 = unwrapped[left]
         y1 = unwrapped[right]
@@ -85,8 +97,8 @@ def interpolate_circular_boundary_hermite(
 
     velocity[:] = np.gradient(unwrapped, t)
     acceleration[:] = np.gradient(velocity, t)
-    output = wrap_deg(unwrapped, period)
-    output[valid] = wrap_deg(y[valid], period)
+    output = wrap_values(unwrapped, period)
+    output[valid] = wrap_values(y[valid], period)
 
     return KinematicInterpolationResult(
         angle_deg=output,
@@ -95,5 +107,3 @@ def interpolate_circular_boundary_hermite(
         angular_acceleration_deg_s2=acceleration,
         rejected_outliers=np.zeros(n, dtype=bool),
     )
-
-

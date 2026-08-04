@@ -4,8 +4,8 @@ from typing import Literal
 
 import numpy as np
 
+from ._periodic import Period, wrap_values
 from .auto import interpolate_circular_auto
-from .inertia import wrap_deg
 from .raw_stream_wrapper import (
     RawStreamInterpolationResult,
     interpolate_raw_circular_stream as _interpolate_raw_circular_stream,
@@ -16,7 +16,7 @@ def interpolate_raw_circular_stream(
     time_s: np.ndarray,
     angle_deg: np.ndarray,
     *,
-    period: float = 360.0,
+    period: Period = 360.0,
     repeat_tolerance_deg: float = 0.0,
     min_repeated_samples: int = 1,
     fit_window_samples: int = 12,
@@ -27,7 +27,10 @@ def interpolate_raw_circular_stream(
     ambiguous_policy: Literal["preserve", "repair"] = "preserve",
     plateau_anchor_policy: Literal["preserve", "repair"] = "preserve",
 ) -> RawStreamInterpolationResult:
-    """Detect and repair held-value plateaus in a raw circular signal.
+    """Detect and repair held-value plateaus in a raw signal.
+
+    A positive finite ``period`` enables circular branch handling. Set
+    ``period=None`` for an ordinary scalar signal with no wrap or unwrap step.
 
     The first occurrence of a repeated value is the *plateau anchor*. It was
     measured before the sensor began returning the same stale value, so the
@@ -80,7 +83,7 @@ def interpolate_raw_circular_stream(
     # Samples outside the explicitly selected repair mask remain exact sensor
     # measurements, matching the established raw-stream result semantics.
     keep = ~repair_mask & np.isfinite(y)
-    output_angle[keep] = wrap_deg(y[keep], period)
+    output_angle[keep] = wrap_values(y[keep], period)
 
     return RawStreamInterpolationResult(
         angle_deg=output_angle,
