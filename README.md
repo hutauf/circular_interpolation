@@ -1,15 +1,16 @@
 # circular_interpolation
 
-Robust reconstruction of circular signals with dropouts, wraparound, held sensor values, and optional direct evaluation on a different time grid.
+Robust reconstruction of circular signals with dropouts, wraparound, held sensor values, and optional direct evaluation on a different time grid. The same reconstruction pipeline can also be used for ordinary non-periodic scalar signals.
 
 ![A held-value dropout reconstructed on the physically plausible revolution](docs/gap_repair.svg)
 
-Angles are not ordinary scalars: `359 deg` and `1 deg` are two degrees apart, and a gap may hide complete revolutions. The package keeps an unwrapped trajectory internally and wraps only the final output.
+Angles are not ordinary scalars: `359 deg` and `1 deg` are two degrees apart, and a gap may hide complete revolutions. The package keeps an unwrapped trajectory internally and wraps only the final output. For non-circular data, pass `period=None` and no wrap or unwrap operation is performed.
 
 ## Highlights
 
 - **Automatic gap model selection** for standstill, short dynamic gaps, and longer moving gaps.
 - **Winding-aware reconstruction** that can retain the likely number of full revolutions.
+- **Non-circular mode:** `period=None` disables all branch alignment, wrapping, and unwrapping.
 - **One optional resampling kwarg:** `target_time_s`.
 - **Direct target-grid evaluation:** selected continuous trajectories are evaluated at the requested times instead of repairing a wrapped series and then resampling it.
 - **Irregular grids and extrapolation** are supported.
@@ -51,7 +52,7 @@ print(result.chosen_model_by_gap)
 print(result.confidence_by_gap)
 ```
 
-Omitting `target_time_s` preserves the historical source-grid behavior exactly.
+Omitting `target_time_s` preserves the source grid. Omitting `period` preserves the historical circular behavior with a period of `360.0`.
 
 ## Repair and change the time grid in one call
 
@@ -74,19 +75,49 @@ assert result.unwrapped_deg.shape == new_time_s.shape
 
 ![Gap repair and direct evaluation on a new time grid](docs/target_time_grid.svg)
 
-The target-grid path does not interpolate already wrapped repaired values. It works on the selected unwrapped trajectories:
+The target-grid path does not interpolate already wrapped repaired values. It works on the selected continuous trajectories:
 
-1. Valid source runs are assigned to consistent revolutions.
+1. Valid source runs are assigned to consistent revolutions in circular mode.
 2. Each internal gap receives the same automatic model as on the source grid.
 3. That continuous model is evaluated directly for target timestamps inside the gap. Linear and Hermite gaps use their analytic curves; short Kalman/RTS gaps insert the requested times as prediction-only states in the same state-space model.
-4. Valid runs use shape-preserving interpolation on the unwrapped branch.
+4. Valid runs use shape-preserving interpolation on the continuous branch.
 5. Outside the measured support, local boundary position, velocity, and acceleration are estimated. Acceleration is applied only over the local fitting horizon; farther extrapolation continues at constant velocity to avoid unbounded quadratic growth.
 
 Extrapolation is necessarily less certain than interpolation between measurements, especially across reversals or abrupt control changes. Keep extrapolation horizons physically reasonable for the application.
 
+## Non-circular signals
+
+Use `period=None` for an ordinary scalar signal. This is the Pythonic sentinel for “there is no period”; using `np.inf` would leave modulo and nearest-branch formulas operating on a mathematical special value, so infinite periods are rejected deliberately.
+
+```python
+values = np.array([340.0, 350.0, np.nan, 10.0, 20.0])
+invalid_mask = ~np.isfinite(values)
+
+result = interpolate_circular_auto(
+    time_s=np.arange(values.size, dtype=float),
+    angle_deg=values,
+    invalid_mask=invalid_mask,
+    period=None,
+)
+
+# Ordinary interpolation: halfway between 350 and 10 is 180, not 0.
+assert np.isclose(result.angle_deg[2], 180.0)
+assert np.array_equal(result.angle_deg, result.unwrapped_deg)
+```
+
+With `period=None`:
+
+- differences use ordinary subtraction;
+- valid runs are not unwrapped;
+- gap endpoints are not shifted by whole revolutions;
+- results are not reduced modulo a period;
+- `angle_deg` and `unwrapped_deg` contain the same values.
+
+The historical names `angle_deg` and `unwrapped_deg` are retained for API compatibility even when the signal uses another unit.
+
 ## Raw stream processing
 
-Use `interpolate_raw_circular_stream` when the sensor repeats its last value instead of supplying an explicit invalid flag. The classifier uses two-sided motion evidence and physical acceleration limits to separate likely held-value dropouts from true standstill, encoder quantization, and ambiguous reversals.
+Use `interpolate_raw_circular_stream` when the sensor repeats its last value instead of supplying an explicit invalid flag. The classifier uses two-sided motion evidence and physical acceleration limits to separate likely held-value dropouts from true standstill, sensor quantization, and ambiguous reversals.
 
 ```python
 from circular_interpolation import interpolate_raw_circular_stream
@@ -99,6 +130,16 @@ raw_result = interpolate_raw_circular_stream(
 print(raw_result.angle_deg)
 print(raw_result.decisions)
 print(raw_result.repaired_mask)
+```
+
+The same detector works for non-circular data:
+
+```python
+raw_result = interpolate_raw_circular_stream(
+    time_s=time_s,
+    angle_deg=ordinary_values,
+    period=None,
+)
 ```
 
 ### The first plateau value remains valid by default
@@ -144,7 +185,7 @@ For each internal source gap, `interpolate_circular_auto` currently applies thes
 
 | Situation | Selected model |
 |---|---|
-| Near standstill | Shortest-arc linear trajectory |
+| Near standstill | Shortest-arc linear trajectory (`linear` when `period=None`) |
 | Moving, endpoint-to-endpoint gap at most 6 ms | Constant-acceleration Kalman/RTS trajectory |
 | Longer moving gap | Boundary-velocity cubic Hermite trajectory |
 | Leading or trailing missing source samples | Boundary kinematic extrapolation |
@@ -153,7 +194,7 @@ Long dynamic gaps are reconstructed but may receive medium or low confidence whe
 
 ## Lower-level algorithms
 
-The lower-level functions remain available for experiments and applications that deliberately choose a fixed model:
+The lower-level functions remain available for experiments and applications that deliberately choose a fixed circular model:
 
 ```python
 from circular_interpolation import (
@@ -165,17 +206,17 @@ from circular_interpolation import (
 - `interpolate_circular_inertial`: constant-velocity Kalman filter with stochastic acceleration and an RTS backward pass.
 - `interpolate_circular_adaptive_minimum_jerk`: winding search plus a smooth minimum-jerk correction with an exact linear fallback.
 
-These lower-level APIs return values on the source grid. Direct `target_time_s` evaluation is exposed by the recommended automatic function, where model selection and output-grid semantics remain consistent.
+These lower-level public APIs return values on the source grid and remain circular. Direct `target_time_s` evaluation and `period=None` are exposed by the recommended automatic and raw-stream functions, where model selection and output-grid semantics remain consistent.
 
 ## Result semantics
 
 - `time_s`: timestamps corresponding to both output signal arrays.
-- `angle_deg`: wrapped output in `[0, period)`.
-- `unwrapped_deg`: continuous branch retaining complete revolutions.
+- `angle_deg`: wrapped output in `[0, period)` when `period` is finite; ordinary unbounded output when `period=None`.
+- `unwrapped_deg`: continuous branch retaining complete revolutions; identical to `angle_deg` when `period=None`.
 - `chosen_model_by_gap`: `(start, end, model)` tuples using **source indices**; `end` is exclusive.
 - `confidence_by_gap`: source-index ranges with `high`, `medium`, or `low` confidence.
 
-The configurable `period` defaults to `360.0`.
+The configurable `period` defaults to `360.0`. Pass `None` to disable periodic handling. Finite positive periods other than 360 are supported; zero, negative, non-finite, and infinite periods are rejected.
 
 ## Development
 
