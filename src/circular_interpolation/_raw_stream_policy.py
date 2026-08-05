@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Literal
 
 import numpy as np
 
-from ._periodic import Period, wrap_values
+from ._periodic import Period, unwrap_values, wrap_values
 from .auto import interpolate_circular_auto
 from .raw_stream_wrapper import (
+    PlateauDecision,
     RawStreamInterpolationResult,
     interpolate_raw_circular_stream as _interpolate_raw_circular_stream,
 )
+
+
+def _plateau_duration_s(
+    time_s: np.ndarray,
+    decision: PlateauDecision,
+) -> float:
+    """Return the full repeated-value duration, including its measured anchor."""
+    anchor = max(0, decision.repeat_start - 1)
+    last_repeated = decision.repeat_end - 1
+    return float(time_s[last_repeated] - time_s[anchor])
 
 
 def interpolate_raw_circular_stream(
@@ -26,6 +38,7 @@ def interpolate_raw_circular_stream(
     max_abs_acceleration_deg_s2: float = 1_000_000.0,
     ambiguous_policy: Literal["preserve", "repair"] = "preserve",
     plateau_anchor_policy: Literal["preserve", "repair"] = "preserve",
+    max_plateau_repair_duration_s: float | None = None,
 ) -> RawStreamInterpolationResult:
     """Detect and repair held-value plateaus in a raw signal.
 
@@ -41,13 +54,34 @@ def interpolate_raw_circular_stream(
     that the first occurrence may already be stale. Classification itself is
     unchanged; the option controls whether the anchor joins a plateau that was
     selected for reconstruction.
+
+    ``ambiguous_policy='repair'`` is intentionally aggressive. A genuine
+    internal standstill and a frozen sensor can be indistinguishable from values
+    alone. Set ``max_plateau_repair_duration_s`` to the longest plausible
+    automatically detected dropout when false repairs are costly. Longer
+    detected plateaus are preserved even if they were classified as ambiguous
+    or as a held dropout. Explicit non-finite samples are still repaired, and
+    leading or trailing boundary plateaus remain preserved as before.
     """
     if ambiguous_policy not in {"preserve", "repair"}:
         raise ValueError("ambiguous_policy must be 'preserve' or 'repair'.")
     if plateau_anchor_policy not in {"preserve", "repair"}:
         raise ValueError("plateau_anchor_policy must be 'preserve' or 'repair'.")
+    if max_plateau_repair_duration_s is not None:
+        max_plateau_repair_duration_s = float(max_plateau_repair_duration_s)
+        if (
+            not np.isfinite(max_plateau_repair_duration_s)
+            or max_plateau_repair_duration_s <= 0.0
+        ):
+            raise ValueError(
+                "max_plateau_repair_duration_s must be positive and finite, "
+                "or None."
+            )
 
-    result = _interpolate_raw_circular_stream(
+    # Ask the lower-level detector to keep ambiguous plateaus. This wrapper then
+    # applies the complete public repair policy once, including the anchor and
+    # duration safeguards, so repaired_mask always describes the actual work.
+    detected = _interpolate_raw_circular_stream(
         time_s=time_s,
         angle_deg=angle_deg,
         period=period,
@@ -58,40 +92,72 @@ def interpolate_raw_circular_stream(
         min_motion_evidence_deg=min_motion_evidence_deg,
         long_standstill_duration_s=long_standstill_duration_s,
         max_abs_acceleration_deg_s2=max_abs_acceleration_deg_s2,
-        ambiguous_policy=ambiguous_policy,
+        ambiguous_policy="preserve",
     )
-
-    if plateau_anchor_policy == "preserve":
-        return result
-
-    repair_mask = result.repaired_mask.copy()
-    for decision in result.decisions:
-        selected_for_repair = decision.kind == "held_dropout" or (
-            decision.kind == "ambiguous" and ambiguous_policy == "repair"
-        )
-        if selected_for_repair:
-            repair_mask[max(0, decision.repeat_start - 1) : decision.repeat_end] = True
-
-    if np.array_equal(repair_mask, result.repaired_mask):
-        return result
 
     t = np.asarray(time_s, dtype=float)
     y = np.asarray(angle_deg, dtype=float)
-    auto = interpolate_circular_auto(t, y, repair_mask, period=period)
-    output_angle = auto.angle_deg.copy()
+    repair_mask = ~np.isfinite(y)
+    decisions = list(detected.decisions)
 
-    # Samples outside the explicitly selected repair mask remain exact sensor
-    # measurements, matching the established raw-stream result semantics.
+    for index, decision in enumerate(decisions):
+        selected_for_repair = decision.kind == "held_dropout" or (
+            decision.kind == "ambiguous" and ambiguous_policy == "repair"
+        )
+        if not selected_for_repair:
+            continue
+
+        plateau_duration_s = _plateau_duration_s(t, decision)
+        if (
+            max_plateau_repair_duration_s is not None
+            and plateau_duration_s > max_plateau_repair_duration_s
+        ):
+            decisions[index] = replace(
+                decision,
+                reason=(
+                    f"{decision.reason} The samples were preserved because the "
+                    f"plateau duration ({plateau_duration_s:.6g} s) exceeds "
+                    "max_plateau_repair_duration_s="
+                    f"{max_plateau_repair_duration_s:.6g} s."
+                ),
+            )
+            continue
+
+        start = decision.repeat_start
+        if plateau_anchor_policy == "repair":
+            start = max(0, start - 1)
+        repair_mask[start : decision.repeat_end] = True
+
+    if (
+        np.array_equal(repair_mask, detected.repaired_mask)
+        and decisions == detected.decisions
+    ):
+        return detected
+
+    if np.any(repair_mask):
+        auto = interpolate_circular_auto(t, y, repair_mask, period=period)
+        output_angle = auto.angle_deg.copy()
+        output_unwrapped = auto.unwrapped_deg
+        chosen_models = auto.chosen_model_by_gap
+        interpolation_confidence = auto.confidence_by_gap
+    else:
+        output_unwrapped = unwrap_values(y, period)
+        output_angle = wrap_values(output_unwrapped, period)
+        chosen_models = []
+        interpolation_confidence = []
+
+    # Every finite sample outside the final repair mask remains the exact sensor
+    # value. This includes boundary plateaus and duration-limited internal runs.
     keep = ~repair_mask & np.isfinite(y)
     output_angle[keep] = wrap_values(y[keep], period)
 
     return RawStreamInterpolationResult(
         angle_deg=output_angle,
-        unwrapped_deg=auto.unwrapped_deg,
+        unwrapped_deg=output_unwrapped,
         repaired_mask=repair_mask,
-        preserved_standstill_mask=result.preserved_standstill_mask,
-        ambiguous_mask=result.ambiguous_mask,
-        decisions=result.decisions,
-        chosen_model_by_gap=auto.chosen_model_by_gap,
-        interpolation_confidence_by_gap=auto.confidence_by_gap,
+        preserved_standstill_mask=detected.preserved_standstill_mask,
+        ambiguous_mask=detected.ambiguous_mask,
+        decisions=decisions,
+        chosen_model_by_gap=chosen_models,
+        interpolation_confidence_by_gap=interpolation_confidence,
     )
