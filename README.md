@@ -16,6 +16,7 @@ Angles are not ordinary scalars: `359 deg` and `1 deg` are two degrees apart, an
 - **Irregular grids and extrapolation** are supported.
 - **Raw-stream wrapper** detects held-value plateaus while conservatively preserving real standstill and quantization plateaus.
 - **Measured plateau anchors stay valid by default:** only subsequent stale repetitions are reconstructed.
+- **Optional repair-duration guard:** long detected plateaus can be preserved even when ambiguous plateaus are repaired aggressively.
 - **Diagnostics** report the selected model and confidence for each source gap.
 
 ## Installation
@@ -165,6 +166,33 @@ raw_result = interpolate_raw_circular_stream(
 ```
 
 This changes only which samples enter the reconstruction mask. Plateau classification and its source-index diagnostics remain unchanged.
+
+### Safety when repairing ambiguous plateaus
+
+`ambiguous_policy="repair"` is useful when small real dropouts would otherwise be left untouched, but it is intentionally aggressive. From values alone, a genuine internal standstill and a sensor that holds its last value are not identifiable in every case.
+
+Leading and trailing plateaus are already protected. They are classified as `boundary_plateau` and remain exact sensor values even when ambiguous plateaus are repaired. For internal plateaus, use a duration guard when the acquisition protocol provides a plausible maximum dropout length:
+
+```python
+raw_result = interpolate_raw_circular_stream(
+    time_s=time_s,
+    angle_deg=angle_deg,
+    ambiguous_policy="repair",
+    max_plateau_repair_duration_s=0.020,
+)
+```
+
+In this example, automatically detected plateaus longer than 20 ms are preserved. The limit applies to both `ambiguous` and `held_dropout` decisions because a true standstill can be misclassified as either one. Explicit `NaN` or infinite samples are still repaired because their invalidity is known rather than inferred.
+
+Choose the value from the sensor or transport contract, for example the largest credible packet-loss burst. `None`, the default, keeps the previous unlimited behavior. A decision that was blocked by the limit retains its original kind and receives an explanatory suffix in `decision.reason`; `repaired_mask` always reflects the samples that were actually reconstructed.
+
+Run the synthetic stop-go benchmark with:
+
+```bash
+PYTHONPATH=src python benchmarks/standstill_safety.py
+```
+
+It exercises ramp-up, ramp-down, an internal standstill, a second motion cycle, and a trailing standstill across several speeds and durations. It reports how often the internal standstill was modified, the resulting maximum error, and confirms that boundary plateaus stay untouched.
 
 The raw-stream wrapper deliberately keeps its classification masks and output on the sensor grid. To produce a different output grid after classification, call the automatic API with the detected mask:
 
